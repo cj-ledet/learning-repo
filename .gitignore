@@ -1,0 +1,29 @@
+# Node
+**/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build output
+**/dist/
+**/*.tsbuildinfo
+
+# Terraform
+**/.terraform/
+**/.terraform.lock.hcl.bak
+**/*.tfstate
+**/*.tfstate.*
+crash.log
+
+# Helm packaging output (if you ever package charts)
+**/*.tgz
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local secrets/configs
+.env
+*.pem

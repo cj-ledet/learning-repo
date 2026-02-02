@@ -65,5 +65,4 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository }}:main
             ghcr.io/${{ github.repository }}:sha-${{ github.sha }}
-            ${{ steps.login-ecr.outputs.registry }}/learning-api:main
             ${{ steps.login-ecr.outputs.registry }}/learning-api:sha-${{ github.sha }}
