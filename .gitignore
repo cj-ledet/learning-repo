@@ -27,3 +27,5 @@ Thumbs.db
 # Local secrets/configs
 .env
 *.pem
+.venv/
+ansible/tmp/

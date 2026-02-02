@@ -1,0 +1,122 @@
+- name: Refresh ECR pull secret and deploy latest ECR sha-* image via Helm
+  hosts: local
+  gather_facts: false
+
+  vars:
+    aws_region: "us-west-2"
+    account_id: "781530536964"
+    ecr_repo_name: "learning-api"
+
+    k8s_namespace: "demo"
+    release: "learning-api"
+    chart_path: "./deploy/helm/learning-api"
+    pull_secret_name: "ecr-pull-secret"
+
+    ecr_registry: "{{ account_id }}.dkr.ecr.{{ aws_region }}.amazonaws.com"
+    image_repo: "{{ ecr_registry }}/{{ ecr_repo_name }}"
+
+    repo_root: "{{ (playbook_dir ~ '/../..') | realpath }}"
+    tmp_dir: "{{ repo_root }}/ansible/tmp"
+    dockerconfig_path: "{{ tmp_dir }}/ecr-dockerconfig.json"
+
+  tasks:
+    - name: Preflight - ensure required CLIs exist
+      ansible.builtin.command: "bash -lc 'command -v {{ item }}'"
+      loop:
+        - aws
+        - kubectl
+        - helm
+      changed_when: false
+
+    - name: Ensure temp dir exists
+      ansible.builtin.file:
+        path: "{{ tmp_dir }}"
+        state: directory
+        mode: "0700"
+
+    - name: Get ECR login password (token)
+      ansible.builtin.command: "aws ecr get-login-password --region {{ aws_region }}"
+      register: ecr_token
+      changed_when: false
+
+    - name: Build docker auth (base64 of AWS:<token>)
+      ansible.builtin.set_fact:
+        ecr_auth_b64: "{{ ('AWS:' ~ ecr_token.stdout) | b64encode }}"
+
+    - name: Write dockerconfigjson to a temp file (absolute path)
+      ansible.builtin.copy:
+        dest: "{{ dockerconfig_path }}"
+        mode: "0600"
+        content: |
+          {
+            "auths": {
+              "{{ ecr_registry }}": {
+                "auth": "{{ ecr_auth_b64 }}"
+              }
+            }
+          }
+
+    - name: Apply/refresh imagePullSecret in namespace (idempotent)
+      ansible.builtin.shell: |
+        set -euo pipefail
+        kubectl create secret generic {{ pull_secret_name }} \
+          -n {{ k8s_namespace }} \
+          --from-file=.dockerconfigjson={{ dockerconfig_path }} \
+          --type=kubernetes.io/dockerconfigjson \
+          --dry-run=client -o yaml | kubectl apply -f -
+      args:
+        executable: /bin/bash
+      changed_when: true
+
+    - name: Get newest sha-* tag from ECR (by push time)
+      ansible.builtin.command: >
+        aws ecr describe-images
+        --region {{ aws_region }}
+        --repository-name {{ ecr_repo_name }}
+        --query "sort_by(imageDetails,&imagePushedAt)[-1].imageTags[?starts_with(@, 'sha-')] | [0]"
+        --output text
+      register: latest_tag
+      changed_when: false
+
+    - name: Fail if no sha-* tag was found
+      ansible.builtin.fail:
+        msg: "No sha-* tag found in ECR repo {{ ecr_repo_name }} (region {{ aws_region }})."
+      when: latest_tag.stdout in ["None", ""]
+
+    - name: Helm upgrade to latest tag
+      ansible.builtin.command: >
+        helm upgrade {{ release }} {{ repo_root }}/{{ chart_path }}
+        -n {{ k8s_namespace }} --create-namespace
+        --set image.repository={{ image_repo }}
+        --set image.tag={{ latest_tag.stdout }}
+        --set image.pullPolicy=IfNotPresent
+      changed_when: true
+
+    - name: Wait for rollout
+      ansible.builtin.command: "kubectl rollout status deployment/{{ release }} -n {{ k8s_namespace }}"
+      changed_when: false
+
+    - name: Show running pod image
+      ansible.builtin.shell: |
+        set -euo pipefail
+        POD="$(kubectl get pods -n {{ k8s_namespace }} -l app.kubernetes.io/instance={{ release }} -o jsonpath='{.items[0].metadata.name}')"
+        kubectl describe pod -n {{ k8s_namespace }} "$POD" | grep -E "Image:|Image ID:"
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Show running pod image (detailed)
+      ansible.builtin.shell: |
+        set -euo pipefail
+        POD="$(kubectl get pods -n {{ k8s_namespace }} -l app.kubernetes.io/instance={{ release }} -o jsonpath='{.items[0].metadata.name}')"
+        kubectl describe pod -n {{ k8s_namespace }} "$POD" | grep -E "Image:|Image ID:"
+      args:
+        executable: /bin/bash
+      register: running_image
+      changed_when: false
+
+    - name: Print deployed tag + running image
+      ansible.builtin.debug:
+        msg:
+          - "Latest tag chosen: {{ latest_tag.stdout }}"
+          - "{{ running_image.stdout_lines }}"
